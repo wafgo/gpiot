@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <signal.h>
 #include <vector>
 #include <string>
@@ -12,6 +13,8 @@
 #include <sstream>
 #include <fstream>
 #include <fcntl.h>
+#include <linux/gpio.h>
+#include <inttypes.h>
 
 #define debug_printf(...) fprintf (stdout, __VA_ARGS__)
 #define err_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -100,6 +103,73 @@ static void do_listen_and_play(struct sound_job &job)
   }
 }
 
+static void check_gpio(void)
+{
+  struct gpioevent_request req;
+  struct gpiohandle_data data;
+  std::string dev_name("/dev/gpiochip0");
+
+  int gpio_fd = open(dev_name.c_str(), 0);
+
+  req.lineoffset = 4;
+  req.handleflags = GPIOHANDLE_REQUEST_INPUT;
+  req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
+  strcpy(req.consumer_label, "gpio-button-ev");
+
+  int ret = ioctl(gpio_fd, GPIO_GET_LINEEVENT_IOCTL, &req);
+  if (ret == -1) {
+    ret = -errno;
+    fprintf(stderr, "Failed to issue GET EVENT "
+            "IOCTL (%d)\n",
+            ret);
+  }
+  ret = ioctl(req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
+  if (ret == -1) {
+    ret = -errno;
+    fprintf(stderr, "Failed to issue GPIOHANDLE GET LINE "
+            "VALUES IOCTL (%d)\n",
+            ret);
+  }
+
+  fprintf(stdout, "Monitoring line 4 on /dev/gpiochip0\n");
+  fprintf(stdout, "Initial line value: %d\n", data.values[0]);
+
+  while (1) {
+    struct gpioevent_data event;
+
+    ret = read(req.fd, &event, sizeof(event));
+    if (ret == -1) {
+      if (errno == -EAGAIN) {
+        fprintf(stderr, "nothing available\n");
+        continue;
+      } else {
+        ret = -errno;
+        fprintf(stderr, "Failed to read event (%d)\n",
+                ret);
+        break;
+      }
+    }
+
+    if (ret != sizeof(event)) {
+      fprintf(stderr, "Reading event failed\n");
+      ret = -EIO;
+      break;
+    }
+    fprintf(stdout, "GPIO EVENT %llu: ", event.timestamp);
+    switch (event.id) {
+    case GPIOEVENT_EVENT_RISING_EDGE:
+      fprintf(stdout, "rising edge");
+      break;
+    case GPIOEVENT_EVENT_FALLING_EDGE:
+      fprintf(stdout, "falling edge");
+      break;
+    default:
+      fprintf(stdout, "unknown event");
+    }
+    fprintf(stdout, "\n");
+  }
+}
+
 int main(int argc, char **argv)
 {
   std::vector<struct sound_job> all_jobs;
@@ -131,6 +201,8 @@ int main(int argc, char **argv)
   }
   int fd = open("/tmp/gpio-test-fifo", O_RDONLY);
   debug_printf("Opened FIFO for writing\n");
+
+  check_gpio();
 
   while(1) {
     char mb;
