@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <linux/gpio.h>
 #include <inttypes.h>
+#include <poll.h>
 
 #define debug_printf(...) fprintf (stdout, __VA_ARGS__)
 #define err_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -23,6 +24,10 @@ struct sound_job {
   pid_t pid;
   pid_t child_pid;
   std::string file_name;
+  struct gpioevent_request req;
+  struct gpiohandle_data data;
+  std::string dev;
+  int gpio_fd;
   int pipefd[2];
   int pin;
 };
@@ -103,71 +108,104 @@ static void do_listen_and_play(struct sound_job &job)
   }
 }
 
-static void check_gpio(void)
+static void check_gpio(std::vector<struct sound_job> &all_jobs)
 {
-  struct gpioevent_request req;
-  struct gpiohandle_data data;
-  std::string dev_name("/dev/gpiochip0");
-
-  int gpio_fd = open(dev_name.c_str(), 0);
-
-  req.lineoffset = 4;
-  req.handleflags = GPIOHANDLE_REQUEST_INPUT;
-  req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
-  strcpy(req.consumer_label, "gpio-button-ev");
-
-  int ret = ioctl(gpio_fd, GPIO_GET_LINEEVENT_IOCTL, &req);
-  if (ret == -1) {
-    ret = -errno;
-    fprintf(stderr, "Failed to issue GET EVENT "
-            "IOCTL (%d)\n",
-            ret);
-  }
-  ret = ioctl(req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
-  if (ret == -1) {
-    ret = -errno;
-    fprintf(stderr, "Failed to issue GPIOHANDLE GET LINE "
-            "VALUES IOCTL (%d)\n",
-            ret);
-  }
-
-  fprintf(stdout, "Monitoring line 4 on /dev/gpiochip0\n");
-  fprintf(stdout, "Initial line value: %d\n", data.values[0]);
-
-  while (1) {
-    struct gpioevent_data event;
-
-    ret = read(req.fd, &event, sizeof(event));
+  int err;
+  /* setup the gpio pins*/
+  for (struct sound_job &job: all_jobs) {
+    job.dev = "/dev/gpiochip0";
+    job.gpio_fd = open(job.dev.c_str(), 0);
+    if (job.gpio_fd < 0) {
+      perror("gpio fd open failed\n");
+      exit(-1);
+    }
+    job.req.lineoffset = job.pin;
+    job.req.handleflags = GPIOHANDLE_REQUEST_INPUT;
+    job.req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
+    snprintf(job.req.consumer_label, sizeof(job.req.consumer_label) , "gpio-button-ev%i", job.req.lineoffset);
+    int ret = ioctl(job.gpio_fd, GPIO_GET_LINEEVENT_IOCTL, &job.req);
     if (ret == -1) {
-      if (errno == -EAGAIN) {
-        fprintf(stderr, "nothing available\n");
-        continue;
-      } else {
-        ret = -errno;
-        fprintf(stderr, "Failed to read event (%d)\n",
-                ret);
+      ret = -errno;
+      debug_printf("Failed to issue GET EVENT IOCTL (%d)\n", ret);
+    }
+    ret = ioctl(job.req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &job.data);
+    if (ret == -1) {
+      ret = -errno;
+      debug_printf("Failed to issue GPIOHANDLE GET LINE VALUES IOCTL (%d)\n", ret);
+    }
+    debug_printf("Monitoring line %i on %s\n", job.req.lineoffset, job.dev.c_str());
+    debug_printf("Initial line value: %d\n", job.data.values[0]);
+  }
+  struct pollfd* poll_fds = (struct pollfd*)malloc(all_jobs.size()*sizeof(struct pollfd));
+  if (!poll_fds) {
+    err_printf("Could not allocate memory for poll file descriptors\n");
+    exit (-1);
+  }
+  debug_printf("Successfully allocated poll fildescriptors\n");
+  memset(poll_fds, 0, all_jobs.size()*sizeof(struct pollfd));
+
+  poll_fds[0].fd = all_jobs[0].req.fd;
+  poll_fds[0].events = POLLIN;
+
+  while(poll(poll_fds, 1, -1) == 1) {
+    struct gpioevent_data event;
+    debug_printf("Received poll event, yuhuu!!!!\n");
+    if (poll_fds[0].revents & POLLIN) {
+      read(all_jobs[0].req.fd, &event, sizeof(event));
+      switch (event.id) {
+      case GPIOEVENT_EVENT_RISING_EDGE:
+        debug_printf("rising edge detected\n");
         break;
+      case GPIOEVENT_EVENT_FALLING_EDGE:
+        debug_printf("falling edge detected\n");
+        break;
+      default:
+        debug_printf("unknown event detected\n");
       }
     }
-
-    if (ret != sizeof(event)) {
-      fprintf(stderr, "Reading event failed\n");
-      ret = -EIO;
-      break;
-    }
-    fprintf(stdout, "GPIO EVENT %llu: ", event.timestamp);
-    switch (event.id) {
-    case GPIOEVENT_EVENT_RISING_EDGE:
-      fprintf(stdout, "rising edge");
-      break;
-    case GPIOEVENT_EVENT_FALLING_EDGE:
-      fprintf(stdout, "falling edge");
-      break;
-    default:
-      fprintf(stdout, "unknown event");
-    }
-    fprintf(stdout, "\n");
   }
+  perror("Poll error occured");
+
+
+
+
+
+
+
+  // while (1) {
+  //   struct gpioevent_data event;
+
+  //   ret = read(req.fd, &event, sizeof(event));
+  //   if (ret == -1) {
+  //     if (errno == -EAGAIN) {
+  //       fprintf(stderr, "nothing available\n");
+  //       continue;
+  //     } else {
+  //       ret = -errno;
+  //       fprintf(stderr, "Failed to read event (%d)\n",
+  //               ret);
+  //       break;
+  //     }
+  //   }
+
+  //   if (ret != sizeof(event)) {
+  //     fprintf(stderr, "Reading event failed\n");
+  //     ret = -EIO;
+  //     break;
+  //   }
+  //   fprintf(stdout, "GPIO EVENT %llu: ", event.timestamp);
+  //   switch (event.id) {
+  //   case GPIOEVENT_EVENT_RISING_EDGE:
+  //     fprintf(stdout, "rising edge");
+  //     break;
+  //   case GPIOEVENT_EVENT_FALLING_EDGE:
+  //     fprintf(stdout, "falling edge");
+  //     break;
+  //   default:
+  //     fprintf(stdout, "unknown event");
+  //   }
+  //   fprintf(stdout, "\n");
+  // }
 }
 
 int main(int argc, char **argv)
@@ -202,7 +240,7 @@ int main(int argc, char **argv)
   int fd = open("/tmp/gpio-test-fifo", O_RDONLY);
   debug_printf("Opened FIFO for writing\n");
 
-  check_gpio();
+  check_gpio(all_jobs);
 
   while(1) {
     char mb;
