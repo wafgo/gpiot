@@ -114,7 +114,7 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
   /* setup the gpio pins*/
   for (struct sound_job &job: all_jobs) {
     job.dev = "/dev/gpiochip0";
-    job.gpio_fd = open(job.dev.c_str(), 0);
+    job.gpio_fd = open(job.dev.c_str(), O_NONBLOCK);
     if (job.gpio_fd < 0) {
       perror("gpio fd open failed\n");
       exit(-1);
@@ -152,6 +152,7 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     debug_printf("Received poll event, yuhuu!!!!\n");
     if (poll_fds[0].revents & POLLIN) {
       read(all_jobs[0].req.fd, &event, sizeof(event));
+      usleep(10000);
       switch (event.id) {
       case GPIOEVENT_EVENT_RISING_EDGE:
         debug_printf("rising edge detected\n");
@@ -161,6 +162,9 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
         break;
       default:
         debug_printf("unknown event detected\n");
+      }
+      while(read(all_jobs[0].req.fd, &event, sizeof(event) > 0) {
+          debug_printf("Read something\n");
       }
     }
   }
@@ -237,17 +241,17 @@ int main(int argc, char **argv)
   } else {
     debug_printf("Successfully opened FIFO\n");
   }
-  int fd = open("/tmp/gpio-test-fifo", O_RDONLY);
-  debug_printf("Opened FIFO for writing\n");
+  //fint fd = open("/tmp/gpio-test-fifo", O_RDONLY);
+  //debug_printf("Opened FIFO for writing\n");
 
   check_gpio(all_jobs);
 
-  while(1) {
-    char mb;
-    if (read(fd, &mb, 1) > 0) {
-      debug_printf("received %c from pipe\n", mb);
-      write(all_jobs[0].pipefd[1], (const void *)&mb, 1);
-    }
-  }
-  wait(NULL);
+//while(1) {
+//  char mb;
+//  if (read(fd, &mb, 1) > 0) {
+//    debug_printf("received %c from pipe\n", mb);
+//    write(all_jobs[0].pipefd[1], (const void *)&mb, 1);
+//  }
+//}
+//wait(NULL);
 }
