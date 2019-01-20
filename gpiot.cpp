@@ -163,7 +163,7 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
       default:
         debug_printf("unknown event detected\n");
       }
-      while(read(all_jobs[0].req.fd, &event, sizeof(event) > 0) {
+      while(read(all_jobs[0].req.fd, &event, sizeof(event) > 0)) {
           debug_printf("Read something\n");
       }
     }
