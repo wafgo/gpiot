@@ -16,6 +16,7 @@
 #include <linux/gpio.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <fcntl.h>
 
 #define debug_printf(...) fprintf (stdout, __VA_ARGS__)
 #define err_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -127,11 +128,23 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     if (ret == -1) {
       ret = -errno;
       debug_printf("Failed to issue GET EVENT IOCTL (%d)\n", ret);
+      exit(-1);
+    }
+    int flags = fcntl(job.req.fd, F_GETFL, 0);
+
+    debug_printf("Filecontrol returned %i flags on fd\n", flags);
+    flags |= O_NONBLOCK;
+    debug_printf("After setting O_NONBLOCK flags are: %i\n", flags);
+
+    if(fcntl(job.req.fd, F_SETFL, flags) != 0) {
+      perror("Unable to set fcntl\n");
+      exit (-1);
     }
     ret = ioctl(job.req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &job.data);
     if (ret == -1) {
       ret = -errno;
       debug_printf("Failed to issue GPIOHANDLE GET LINE VALUES IOCTL (%d)\n", ret);
+      exit(-1);
     }
     debug_printf("Monitoring line %i on %s\n", job.req.lineoffset, job.dev.c_str());
     debug_printf("Initial line value: %d\n", job.data.values[0]);
@@ -163,53 +176,15 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
       default:
         debug_printf("unknown event detected\n");
       }
-      while(read(all_jobs[0].req.fd, &event, sizeof(event) > 0)) {
-          debug_printf("Read something\n");
+      while(1) {
+        int left_to_read = read(all_jobs[0].req.fd, &event, sizeof(event));
+        if (left_to_read <= 0)
+          break;
       }
     }
   }
   perror("Poll error occured");
 
-
-
-
-
-
-
-  // while (1) {
-  //   struct gpioevent_data event;
-
-  //   ret = read(req.fd, &event, sizeof(event));
-  //   if (ret == -1) {
-  //     if (errno == -EAGAIN) {
-  //       fprintf(stderr, "nothing available\n");
-  //       continue;
-  //     } else {
-  //       ret = -errno;
-  //       fprintf(stderr, "Failed to read event (%d)\n",
-  //               ret);
-  //       break;
-  //     }
-  //   }
-
-  //   if (ret != sizeof(event)) {
-  //     fprintf(stderr, "Reading event failed\n");
-  //     ret = -EIO;
-  //     break;
-  //   }
-  //   fprintf(stdout, "GPIO EVENT %llu: ", event.timestamp);
-  //   switch (event.id) {
-  //   case GPIOEVENT_EVENT_RISING_EDGE:
-  //     fprintf(stdout, "rising edge");
-  //     break;
-  //   case GPIOEVENT_EVENT_FALLING_EDGE:
-  //     fprintf(stdout, "falling edge");
-  //     break;
-  //   default:
-  //     fprintf(stdout, "unknown event");
-  //   }
-  //   fprintf(stdout, "\n");
-  // }
 }
 
 int main(int argc, char **argv)
