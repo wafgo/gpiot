@@ -31,8 +31,6 @@ struct sound_job {
   struct gpiohandle_data data;
   std::string dev;
   int gpio_fd;
-  int pipefd[2];
-  int pin;
 };
 
 static int parse_sound_jobs(std::string &&config_file, std::vector<struct sound_job> &jobs)
@@ -55,10 +53,10 @@ static int parse_sound_jobs(std::string &&config_file, std::vector<struct sound_
     std::regex_match(line, match, pin_regex);
     debug_printf("Parsing configuration file Line #%i:\t\t\"%s\"\n\t", line_no, line.c_str());
     if (match.size() == 3) {
-      job.pin = atoi(match[1].str().c_str());
+      job.req.lineoffset = atoi(match[1].str().c_str());
       job.file_name = match[2].str();
       jobs.push_back(job);
-      debug_printf("\t Found \"Pin %i\" connection to Sound file \"%s\"\n", job.pin, job.file_name.c_str());
+      debug_printf("\t Found \"Pin %i\" connection to Sound file \"%s\"\n", job.req.lineoffset, job.file_name.c_str());
     } else {
       debug_printf("Error parsing configuration file:\n\t Line %s has invalid syntax\n", line.c_str());
       exit(-1);
@@ -69,120 +67,82 @@ static int parse_sound_jobs(std::string &&config_file, std::vector<struct sound_
 
 static void do_listen_and_play(struct sound_job &job)
 {
-  char cmd;
-  /* close the write side of the pipe because the child processes will only listen on commands from the parent */
-  close(job.pipefd[1]);
+  job.req.handleflags = GPIOHANDLE_REQUEST_INPUT;
+  job.req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
+  snprintf(job.req.consumer_label, sizeof(job.req.consumer_label) , "gpio-button-ev%i", job.req.lineoffset);
+  int ret = ioctl(job.gpio_fd, GPIO_GET_LINEEVENT_IOCTL, &job.req);
+  if (ret == -1) {
+    ret = -errno;
+    debug_printf("Failed to issue GET EVENT IOCTL (%d) for gpio %s:%i\n", ret, job.dev.c_str(), job.req.lineoffset);
+    exit(-1);
+  }
+  int flags = fcntl(job.req.fd, F_GETFL, 0);
+  debug_printf("fcntl for gpio %s : %i returned %i flags on fd\n", job.dev.c_str(), job.req.lineoffset, flags);
+  flags |= O_NONBLOCK;
+
+  if(fcntl(job.req.fd, F_SETFL, flags) != 0) {
+    debug_printf("Unable to set fcntl for gpio %s : %i\n",job.dev.c_str(), job.req.lineoffset);
+    exit (-1);
+  }
+  ret = ioctl(job.req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &job.data);
+  if (ret == -1) {
+    debug_printf("Failed to issue GPIOHANDLE GET LINE VALUES IOCTL (%d)\n", ret);
+    exit(-errno);
+  }
+  debug_printf("Monitoring line %i on %s\n", job.req.lineoffset, job.dev.c_str());
+  debug_printf("%s : %d initial line value: %d\n", job.dev.c_str(), job.req.lineoffset, job.data.values[0]);
+
   while (1) {
     pid_t this_pid = getpid();
+    struct pollfd poll_fd = {0};
     /* We will fork new mpg123 processes for each new sound job. We will kill these jobs if a new "play" or "stop" command
        arrives BEFORE the sound job has finished. If we do nothing here these mpg123 processes will be zombied because theire return value is not
        checked by the parent. To avoid this we will register a signal handler which will simply ignore the return value
        REF: https://www.win.tue.nl/~aeb/linux/lk/lk-5.html */
     signal(SIGCHLD, SIG_IGN);
-    /* wait for the next command from the parent process */
-    while(read(job.pipefd[0], &cmd, 1) > 0) {
-      debug_printf("Read %c(%i)\n", cmd, this_pid);
-      /* just "p" (play) and "s" (stop) are accepted*/
-      if (cmd != 'p' && cmd != 's') {
-        debug_printf("Invalid character from parent process received\n");
-        continue;
-      }
-      if (job.child_pid != -1) {
-        /* check if PID is still running. FIXME: this is not save if pids are reused by the kernel which seems not to happen in linux*/
-        if (kill(job.child_pid, 0) == 0) {
-          debug_printf("Child is still alive\n");
-          /* send the SIGTERM signal to the mpg123 process */
-          kill(job.child_pid, SIGTERM);
-        }
-      }
-      if (cmd == 's')
-        continue;
-      /* we come here just in case of an p (play) command */
-      pid_t cpid = fork();
-      if (cpid < 0) {
-        debug_printf("Could not fork child pid n");
-      } else if (cpid == 0) {
-        debug_printf("Start playing \"%s\"(%i)\n", job.file_name.c_str(), this_pid);
-        execlp("mpg123", "mpg123", "-q", job.file_name.c_str(), NULL);
-      } else {
-        job.child_pid = cpid;
-      }
-    }
-  }
-}
+    poll_fd.fd = job.req.fd;
+    poll_fd.events = POLLIN;
 
-static void check_gpio(std::vector<struct sound_job> &all_jobs)
-{
-  int err;
-  /* setup the gpio pins*/
-  for (struct sound_job &job: all_jobs) {
-    job.dev = "/dev/gpiochip0";
-    job.gpio_fd = open(job.dev.c_str(), O_NONBLOCK);
-    if (job.gpio_fd < 0) {
-      perror("gpio fd open failed\n");
-      exit(-1);
-    }
-    job.req.lineoffset = job.pin;
-    job.req.handleflags = GPIOHANDLE_REQUEST_INPUT;
-    job.req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
-    snprintf(job.req.consumer_label, sizeof(job.req.consumer_label) , "gpio-button-ev%i", job.req.lineoffset);
-    int ret = ioctl(job.gpio_fd, GPIO_GET_LINEEVENT_IOCTL, &job.req);
-    if (ret == -1) {
-      ret = -errno;
-      debug_printf("Failed to issue GET EVENT IOCTL (%d)\n", ret);
-      exit(-1);
-    }
-    int flags = fcntl(job.req.fd, F_GETFL, 0);
-
-    debug_printf("Filecontrol returned %i flags on fd\n", flags);
-    flags |= O_NONBLOCK;
-    debug_printf("After setting O_NONBLOCK flags are: %i\n", flags);
-
-    if(fcntl(job.req.fd, F_SETFL, flags) != 0) {
-      perror("Unable to set fcntl\n");
-      exit (-1);
-    }
-    ret = ioctl(job.req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &job.data);
-    if (ret == -1) {
-      debug_printf("Failed to issue GPIOHANDLE GET LINE VALUES IOCTL (%d)\n", ret);
-      exit(-errno);
-    }
-    debug_printf("Monitoring line %i on %s\n", job.req.lineoffset, job.dev.c_str());
-    debug_printf("Initial line value: %d\n", job.data.values[0]);
-  }
-  struct pollfd* poll_fds = (struct pollfd*)malloc(all_jobs.size()*sizeof(struct pollfd));
-  if (!poll_fds) {
-    err_printf("Could not allocate memory for poll file descriptors\n");
-    exit (-1);
-  }
-  memset(poll_fds, 0, all_jobs.size()*sizeof(struct pollfd));
-  poll_fds[0].fd = all_jobs[0].req.fd;
-  poll_fds[0].events = POLLIN;
-
-  while(poll(poll_fds, 1, -1) == 1) {
-    struct gpioevent_data event;
-    if (poll_fds[0].revents & POLLIN) {
-      usleep(DEBOUNCE_MS * 1000);
-      while(1) {
-        int read_err = read(all_jobs[0].req.fd, &event, sizeof(event));
-        if (read_err < 0 && errno == -EAGAIN) {
-          switch (event.id) {
-          case GPIOEVENT_EVENT_RISING_EDGE:
-            printf("rising edge detected\n");
+    while(poll(&poll_fd, 1, -1) == 1) {
+      struct gpioevent_data event;
+      if (poll_fd.revents & POLLIN) {
+        /* debounce in a very trivial way by waiting and let the gpiolib fill the kfifo */
+        usleep(DEBOUNCE_MS * 1000);
+        while(1) {
+          /* read all the garbage from debouncing and just use the last entry (the first one can also be used)*/
+          int read_err = read(job.req.fd, &event, sizeof(event));
+          if (read_err < 0 && errno == -EAGAIN) {
+            if (job.child_pid != -1) {
+              /* check if PID is still running. FIXME: this is not save if pids are reused by the kernel which seems not to happen in linux*/
+              if (kill(job.child_pid, 0) == 0) {
+                debug_printf("Child of %s : %i is still alive playing %s\n",job.dev.c_str(), job.req.lineoffset, job.file_name.c_str());
+                /* send the SIGTERM signal to the mpg123 process */
+                kill(job.child_pid, SIGTERM);
+              }
+            }
+            switch (event.id) {
+            case GPIOEVENT_EVENT_RISING_EDGE:
+              printf("rising edge detected\n");
+              break;
+            case GPIOEVENT_EVENT_FALLING_EDGE:
+              printf("falling edge detected\n");
+              pid_t cpid = fork();
+              if (cpid < 0) {
+                debug_printf("Could not fork child pid n");
+              } else if (cpid == 0) {
+                debug_printf("Start playing \"%s\"(%i)\n", job.file_name.c_str(), this_pid);
+                execlp("mpg123", "mpg123", "-q", job.file_name.c_str(), NULL);
+              } else {
+                job.child_pid = cpid;
+              }
+              break;
+            }
             break;
-          case GPIOEVENT_EVENT_FALLING_EDGE:
-            printf("falling edge detected\n");
-            break;
-          default:
-            printf("unknown event detected\n");
           }
-          break;
         }
       }
     }
   }
-  perror("Poll error occured");
-
 }
 
 int main(int argc, char **argv)
@@ -191,9 +151,12 @@ int main(int argc, char **argv)
   parse_sound_jobs("config.cfg", all_jobs);
   debug_printf("Start forking child processes to execute sounds\n");
   for (struct sound_job &job: all_jobs) {
-    if (pipe(job.pipefd) == -1) {
-      perror("pipe");
-      exit(EXIT_FAILURE);
+    //FIXME: need to be adjusted according to the pin
+    job.dev = "/dev/gpiochip0";
+    job.gpio_fd = open(job.dev.c_str(), O_NONBLOCK);
+    if (job.gpio_fd < 0) {
+      debug_printf("gpio fd open failed with %i for %s : %i\n", errno, job.dev.c_str(), job.req.lineoffset);
+      exit(-1);
     }
     pid_t child_pid = fork();
     if (child_pid < 0) {
@@ -202,17 +165,7 @@ int main(int argc, char **argv)
       do_listen_and_play(job);
     } else {
       job.pid = child_pid;
-      debug_printf("Parent closing read side pipe for child process pid = %i (%s)\n", child_pid, job.file_name.c_str());
-      close(job.pipefd[0]);
     }
   }
-  // Here we are in the parent process an have to open all available gpio devices and poll on them
-  // when a state change is detected we need to send an 'p' into the corresponding pipe to start the sound_job
-  int err = mkfifo("/tmp/gpio-test-fifo", 0666);
-  if (err != 0 && errno != EEXIST) {
-    perror("mkfifo error");
-  } else {
-    debug_printf("Successfully opened FIFO\n");
-  }
-  check_gpio(all_jobs);
+  while(1) {sleep(1);}
 }
