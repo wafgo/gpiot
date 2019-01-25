@@ -166,9 +166,9 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     if (poll_fds[0].revents & POLLIN) {
       usleep(20000);
       while(1) {
-        int num_of_bytes_to_read = read(all_jobs[0].req.fd, &event, sizeof(event));
+        int read_err = read(all_jobs[0].req.fd, &event, sizeof(event));
         //debug_printf("-->Garbage read of %i bytes with event_id = %i\n", num_of_bytes_to_read, event.id);
-        if (left_to_read == -EAGAIN) {
+        if (read_err == -EAGAIN) {
           switch (event.id) {
           case GPIOEVENT_EVENT_RISING_EDGE:
             debug_printf("rising edge detected\n");
