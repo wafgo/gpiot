@@ -164,22 +164,23 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     struct gpioevent_data event;
     debug_printf("Received poll event, yuhuu!!!!\n");
     if (poll_fds[0].revents & POLLIN) {
-      read(all_jobs[0].req.fd, &event, sizeof(event));
-      usleep(10000);
-      switch (event.id) {
-      case GPIOEVENT_EVENT_RISING_EDGE:
-        debug_printf("rising edge detected\n");
-        break;
-      case GPIOEVENT_EVENT_FALLING_EDGE:
-        debug_printf("falling edge detected\n");
-        break;
-      default:
-        debug_printf("unknown event detected\n");
-      }
+      usleep(20000);
       while(1) {
-        int left_to_read = read(all_jobs[0].req.fd, &event, sizeof(event));
-        if (left_to_read <= 0 | left_to_read == -EAGAIN)
+        int num_of_bytes_to_read = read(all_jobs[0].req.fd, &event, sizeof(event));
+        //debug_printf("-->Garbage read of %i bytes with event_id = %i\n", num_of_bytes_to_read, event.id);
+        if (left_to_read == -EAGAIN) {
+          switch (event.id) {
+          case GPIOEVENT_EVENT_RISING_EDGE:
+            debug_printf("rising edge detected\n");
+            break;
+          case GPIOEVENT_EVENT_FALLING_EDGE:
+            debug_printf("falling edge detected\n");
+            break;
+          default:
+            debug_printf("unknown event detected\n");
+          }
           break;
+        }
       }
     }
   }
