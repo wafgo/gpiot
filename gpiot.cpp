@@ -178,7 +178,7 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
       }
       while(1) {
         int left_to_read = read(all_jobs[0].req.fd, &event, sizeof(event));
-        if (left_to_read <= 0)
+        if (left_to_read <= 0 | left_to_read == -EAGAIN)
           break;
       }
     }
