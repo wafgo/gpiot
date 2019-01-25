@@ -111,7 +111,7 @@ static void do_listen_and_play(struct sound_job &job)
         while(1) {
           /* read all the garbage from debouncing and just use the last entry (the first one can also be used)*/
           int read_err = read(job.req.fd, &event, sizeof(event));
-          if (read_err < 0 && errno == -EAGAIN) {
+          if (read_err < 0 && errno == EAGAIN) {
             if (job.child_pid != -1) {
               /* check if PID is still running. FIXME: this is not save if pids are reused by the kernel which seems not to happen in linux*/
               if (kill(job.child_pid, 0) == 0) {
