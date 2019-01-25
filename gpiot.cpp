@@ -44,7 +44,7 @@ static int parse_sound_jobs(std::string &&config_file, std::vector<struct sound_
     exit (-1);
   }
   /* config file should be sth like this "pinX = fileY"*/
-  std::regex pin_regex(R"B(pin(\d+)\s*=\s*([\w./-_]+))B");
+  std::regex pin_regex(R"B(pin(\d+)\s*=\s*([^\s]+))B");
 
   std::string line;
   int line_no = 1;
