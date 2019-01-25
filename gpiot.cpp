@@ -21,6 +21,8 @@
 #define debug_printf(...) fprintf (stdout, __VA_ARGS__)
 #define err_printf(...) fprintf(stderr, __VA_ARGS__)
 
+#define DEBOUNCE_MS (20U)
+
 struct sound_job {
   pid_t pid;
   pid_t child_pid;
@@ -142,9 +144,8 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     }
     ret = ioctl(job.req.fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &job.data);
     if (ret == -1) {
-      ret = -errno;
       debug_printf("Failed to issue GPIOHANDLE GET LINE VALUES IOCTL (%d)\n", ret);
-      exit(-1);
+      exit(-errno);
     }
     debug_printf("Monitoring line %i on %s\n", job.req.lineoffset, job.dev.c_str());
     debug_printf("Initial line value: %d\n", job.data.values[0]);
@@ -154,30 +155,26 @@ static void check_gpio(std::vector<struct sound_job> &all_jobs)
     err_printf("Could not allocate memory for poll file descriptors\n");
     exit (-1);
   }
-  debug_printf("Successfully allocated poll fildescriptors\n");
   memset(poll_fds, 0, all_jobs.size()*sizeof(struct pollfd));
-
   poll_fds[0].fd = all_jobs[0].req.fd;
   poll_fds[0].events = POLLIN;
 
   while(poll(poll_fds, 1, -1) == 1) {
     struct gpioevent_data event;
-    debug_printf("Received poll event, yuhuu!!!!\n");
     if (poll_fds[0].revents & POLLIN) {
-      usleep(20000);
+      usleep(DEBOUNCE_MS * 1000);
       while(1) {
         int read_err = read(all_jobs[0].req.fd, &event, sizeof(event));
-        //debug_printf("-->Garbage read of %i bytes with event_id = %i\n", num_of_bytes_to_read, event.id);
-        if (read_err == -EAGAIN) {
+        if (read_err < 0 && errno == -EAGAIN) {
           switch (event.id) {
           case GPIOEVENT_EVENT_RISING_EDGE:
-            debug_printf("rising edge detected\n");
+            printf("rising edge detected\n");
             break;
           case GPIOEVENT_EVENT_FALLING_EDGE:
-            debug_printf("falling edge detected\n");
+            printf("falling edge detected\n");
             break;
           default:
-            debug_printf("unknown event detected\n");
+            printf("unknown event detected\n");
           }
           break;
         }
@@ -217,17 +214,5 @@ int main(int argc, char **argv)
   } else {
     debug_printf("Successfully opened FIFO\n");
   }
-  //fint fd = open("/tmp/gpio-test-fifo", O_RDONLY);
-  //debug_printf("Opened FIFO for writing\n");
-
   check_gpio(all_jobs);
-
-//while(1) {
-//  char mb;
-//  if (read(fd, &mb, 1) > 0) {
-//    debug_printf("received %c from pipe\n", mb);
-//    write(all_jobs[0].pipefd[1], (const void *)&mb, 1);
-//  }
-//}
-//wait(NULL);
 }
