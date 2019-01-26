@@ -18,7 +18,14 @@
 #include <poll.h>
 #include <fcntl.h>
 
+#ifdef RELEASE
+#define debug_printf(...)
+#define info_printf(...)
+#else
 #define debug_printf(...) fprintf (stdout, __VA_ARGS__)
+#define info_printf(...) fprintf (stdout, __VA_ARGS__)
+#endif
+
 #define err_printf(...) fprintf(stderr, __VA_ARGS__)
 
 #define DEBOUNCE_MS (20U)
@@ -67,6 +74,7 @@ static int parse_sound_jobs(std::string &&config_file, std::vector<struct sound_
 
 static void do_listen_and_play(struct sound_job &job)
 {
+  pid_t cpid;
   job.req.handleflags = GPIOHANDLE_REQUEST_INPUT;
   job.req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
   snprintf(job.req.consumer_label, sizeof(job.req.consumer_label) , "gpio-button-ev%i", job.req.lineoffset);
@@ -115,18 +123,18 @@ static void do_listen_and_play(struct sound_job &job)
             if (job.child_pid != -1) {
               /* check if PID is still running. FIXME: this is not save if pids are reused by the kernel which seems not to happen in linux*/
               if (kill(job.child_pid, 0) == 0) {
-                debug_printf("Child of %s : %i is still alive playing %s\n",job.dev.c_str(), job.req.lineoffset, job.file_name.c_str());
+                debug_printf("Child of %s : %i is still alive playing %s. Kill the job now\n",job.dev.c_str(), job.req.lineoffset, job.file_name.c_str());
                 /* send the SIGTERM signal to the mpg123 process */
                 kill(job.child_pid, SIGTERM);
               }
             }
             switch (event.id) {
             case GPIOEVENT_EVENT_RISING_EDGE:
-              printf("rising edge detected\n");
+              info_printf("rising edge detected\n");
               break;
             case GPIOEVENT_EVENT_FALLING_EDGE:
-              printf("falling edge detected\n");
-              pid_t cpid = fork();
+              info_printf("falling edge detected\n");
+              cpid = fork();
               if (cpid < 0) {
                 debug_printf("Could not fork child pid n");
               } else if (cpid == 0) {
@@ -135,6 +143,8 @@ static void do_listen_and_play(struct sound_job &job)
               } else {
                 job.child_pid = cpid;
               }
+              break;
+            default:
               break;
             }
             break;
